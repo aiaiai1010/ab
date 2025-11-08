@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>|acc|（加速度の大きさ）記録ツール</title>
+  <title>加速度センサログ（重力なし3軸）</title>
   <style>
     body {
       font-family: system-ui, "Noto Sans JP", sans-serif;
@@ -25,19 +25,18 @@
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     input[type="number"] { width: 120px; padding: 6px; font-size: 14px; }
     .status { font-size: 13px; color: #555; margin-top: 6px; white-space: pre-line; }
-    .highlight { font-weight: bold; color: #0077cc; }
-    .value { font-size: 22px; font-weight: bold; color: #222; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    th, td { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: right; }
+    th { background: #fafafa; }
   </style>
 </head>
 <body>
-  <h1>|acc|（加速度の大きさ）記録ツール</h1>
+  <h1>加速度センサログ（重力なし3軸）</h1>
 
   <div class="card">
     <p style="font-size:13px;">
-      スマホを足の上などに置き、重力を除いた加速度の大きさ（|acc|）を記録します。<br>
-      記録したデータはCSVで保存できます（解析は行いません）。<br><br>
-      手順：<br>
-      ①「センサ許可」→ ② 記録間隔を入力 → ③「記録開始」→ 揺らす → ④「記録停止」→ ⑤「CSVダウンロード」
+      スマホの重力を除いた加速度（<b>acceleration.x / y / z</b>）をCSVに記録します。<br>
+      記録間隔（秒）を設定して、「記録開始」→「記録停止」→「CSVダウンロード」で保存できます。
     </p>
   </div>
 
@@ -53,10 +52,14 @@
     <div id="status" class="status"></div>
   </div>
 
-  <div class="card" style="text-align:center;">
-    <div class="highlight">現在の |acc|（m/s²）</div>
-    <div class="value" id="accAbs">-</div>
-    <div style="font-size:12px;" id="currentTime">time: -</div>
+  <div class="card">
+    <div style="font-size:13px;">
+      <b>現在の加速度（m/s², 重力なし）</b>
+    </div>
+    <table>
+      <thead><tr><th>X</th><th>Y</th><th>Z</th></tr></thead>
+      <tbody><tr><td id="accX">-</td><td id="accY">-</td><td id="accZ">-</td></tr></tbody>
+    </table>
   </div>
 
   <script>
@@ -68,17 +71,15 @@
     let logTimer = null;
     let startPerf = 0;
 
-    // ボタン
     const btnPerm = $('btnPerm');
     const btnStart = $('btnStart');
     const btnStop = $('btnStop');
     const btnDL = $('btnDL');
     const intervalInput = $('intervalInput');
-    const accAbsEl = $('accAbs');
-    const timeEl = $('currentTime');
     const statusEl = $('status');
+    const accXEl = $('accX'), accYEl = $('accY'), accZEl = $('accZ');
 
-    // === センサ許可 ===
+    // --- センサ許可 ---
     btnPerm.onclick = async () => {
       if (typeof DeviceMotionEvent !== 'undefined' &&
           typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -87,9 +88,7 @@
           if (res === 'granted') startSensor();
           else alert('センサ利用が許可されませんでした。');
         } catch (e) { alert('センサ許可中にエラー: ' + e); }
-      } else {
-        startSensor();
-      }
+      } else startSensor();
     };
 
     function startSensor() {
@@ -97,37 +96,33 @@
       statusEl.textContent = 'センサ利用OK。「記録開始」でログを取れます。';
       btnPerm.disabled = true;
       btnStart.disabled = false;
-      setInterval(updateDisplay, 200); // 画面更新0.2秒ごと
+      setInterval(updateDisplay, 200);
     }
 
     function updateDisplay() {
       if (!lastMotion) return;
       const a = lastMotion.acceleration || {};
-      const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
-      const abs = Math.sqrt(ax*ax + ay*ay + az*az);
-      accAbsEl.textContent = fmt(abs);
-      timeEl.textContent = 'time: ' + new Date().toISOString();
+      accXEl.textContent = fmt(a.x);
+      accYEl.textContent = fmt(a.y);
+      accZEl.textContent = fmt(a.z);
     }
 
-    // === 記録開始 ===
+    // --- 記録開始 ---
     btnStart.onclick = () => {
       if (!lastMotion) { alert('センサデータ未取得'); return; }
       const intervalSec = parseFloat(intervalInput.value);
       if (!(intervalSec > 0)) { alert('間隔を入力してください'); return; }
       const intervalMs = intervalSec * 1000;
 
-      // ヘッダ
-      logLines = [['time_iso','elapsed_ms','acc_abs','interval_ms'].join(',')];
+      logLines = [['time_iso','elapsed_ms','acc_x','acc_y','acc_z','interval_ms'].join(',')];
       startPerf = performance.now();
 
       logTimer = setInterval(() => {
         if (!lastMotion) return;
         const a = lastMotion.acceleration || {};
-        const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
-        const abs = Math.sqrt(ax*ax + ay*ay + az*az);
         const t = new Date().toISOString();
         const elapsed = (performance.now() - startPerf).toFixed(1);
-        logLines.push([t, elapsed, abs, intervalMs].join(','));
+        logLines.push([t, elapsed, a.x ?? '', a.y ?? '', a.z ?? '', intervalMs].join(','));
       }, intervalMs);
 
       statusEl.textContent = `記録中… (${intervalSec}秒ごとに保存)`;
@@ -136,7 +131,7 @@
       btnDL.disabled = false;
     };
 
-    // === 記録停止 ===
+    // --- 記録停止 ---
     btnStop.onclick = () => {
       clearInterval(logTimer);
       statusEl.textContent = '記録停止。「CSVダウンロード」で保存できます。';
@@ -144,12 +139,12 @@
       btnStop.disabled = true;
     };
 
-    // === CSVダウンロード ===
+    // --- CSVダウンロード ---
     btnDL.onclick = () => {
       if (logLines.length <= 1) { alert('データがありません'); return; }
       const blob = new Blob([logLines.join('\n')], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
-      const name = 'acc_abs_' + new Date().toISOString().replace(/[:]/g,'-').slice(0,19) + '.csv';
+      const name = 'acc_log_' + new Date().toISOString().replace(/[:]/g,'-').slice(0,19) + '.csv';
       const a = document.createElement('a');
       a.href = url; a.download = name; a.click();
       URL.revokeObjectURL(url);
