@@ -1,69 +1,334 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-  <title>MediaPipe Z座標取得</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>貧乏ゆすり加速度ログ（CSV記録）</title>
   <style>
     body {
-      font-size: 24px;
-      text-align: center;
+      font-family: system-ui, -apple-system, "Segoe UI",
+                   "Noto Sans JP", sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #f5f5f5;
+      color: #222;
     }
-    video, canvas {
-      width: 640px;
-      height: 480px;
-      transform: scaleX(-1);
+    h1 { font-size: 20px; margin-bottom: 8px; }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.06);
     }
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    button {
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 999px;
+      border: 1px solid #ccc;
+      background: #fafafa;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    label {
+      font-size: 14px;
+      display: block;
+      margin-bottom: 4px;
+    }
+    input[type="number"] {
+      width: 120px;
+      padding: 6px;
+      font-size: 14px;
+    }
+    .status {
+      font-size: 13px;
+      color: #555;
+      white-space: pre-line;
+      margin-top: 4px;
+    }
+    .highlight { font-weight: bold; color: #0077cc; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    th, td {
+      padding: 4px 6px;
+      border-bottom: 1px solid #eee;
+      text-align: right;
+    }
+    th { background: #fafafa; }
   </style>
 </head>
 <body>
-  <h1>鼻先と顎のZ座標</h1>
-  <video id="video" autoplay playsinline muted></video>
-  <canvas id="canvas"></canvas>
-  <p id="zOutput">読み取り中...</p>
+  <h1>貧乏ゆすり加速度ログ（CSV記録）</h1>
 
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <div class="card">
+    <p style="font-size:13px; line-height:1.5;">
+      ● スマホを足の上（太ももなど）に置いて、貧乏ゆすりの動きを計測します。<br>
+      ● このページは <span class="highlight">重力なしの加速度（acceleration）</span> だけを
+         CSVに記録します（解析はしません）。<br><br>
+      手順：<br>
+      ① 「センサ許可」を押してブラウザにセンサ利用を許可<br>
+      ② 記録間隔（何秒ごとに記録するか）を入力<br>
+      ③ 「記録開始」→ 貧乏ゆすりをする → 「記録停止」<br>
+      ④ 「CSVダウンロード」でデータ保存
+    </p>
+  </div>
+
+  <div class="card">
+    <label for="intervalInput">
+      記録間隔（秒）<br>
+      <span style="font-size: 12px; color:#666;">
+        例：0.02 = 0.02秒ごと（約50Hz）、0.05 = 0.05秒ごと（約20Hz）
+      </span>
+    </label>
+    <input id="intervalInput" type="number" min="0.005" step="0.01" value="0.05">
+    <div class="buttons">
+      <button id="btnPermission">① センサ許可</button>
+      <button id="btnStart" disabled>② 記録開始</button>
+      <button id="btnStop" disabled>③ 記録停止</button>
+      <button id="btnDownload" disabled>④ CSVダウンロード</button>
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="card">
+    <div class="status">
+      <span class="highlight">現在の加速度（重力なし）</span><br>
+      <span id="currentTime">time: -</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>acc_x</th><th>acc_y</th><th>acc_z</th><th>|acc|</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td id="accX">-</td>
+          <td id="accY">-</td>
+          <td id="accZ">-</td>
+          <td id="accAbs">-</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 
   <script>
-    const videoElement = document.getElementById('video');
-    const canvasElement = document.getElementById('canvas');
-    const canvasCtx = canvasElement.getContext('2d');
-    const zOutput = document.getElementById('zOutput');
+    // ==========
+    // ユーティリティ
+    // ==========
+    function $(id) { return document.getElementById(id); }
+    function fmt2(v) {
+      if (v === null || v === undefined || isNaN(v)) return '-';
+      return v.toFixed(2);
+    }
 
-    const faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-    });
+    const statusEl   = $('status');
+    const timeEl     = $('currentTime');
+    const accXEl     = $('accX');
+    const accYEl     = $('accY');
+    const accZEl     = $('accZ');
+    const accAbsEl   = $('accAbs');
 
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
+    const btnPerm    = $('btnPermission');
+    const btnStart   = $('btnStart');
+    const btnStop    = $('btnStop');
+    const btnDL      = $('btnDownload');
+    const intervalEl = $('intervalInput');
 
-    faceMesh.onResults((results) => {
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+    let lastMotion   = null;
+    let displayTimer = null;
 
-      if (results.multiFaceLandmarks.length > 0) {
-        const landmarks = results.multiFaceLandmarks[0];
-        const noseTipZ = landmarks[1].z.toFixed(5);  // 鼻先
-        const chinZ = landmarks[152].z.toFixed(5);   // 顎
+    let logging      = false;
+    let logTimerId   = null;
+    let logLines     = [];
+    let startPerf    = 0;
 
-        zOutput.textContent = `鼻先のZ座標: ${noseTipZ}、顎のZ座標: ${chinZ}`;
+    // ==========
+    // センサ許可
+    // ==========
+    btnPerm.onclick = async function () {
+      if (typeof DeviceMotionEvent !== 'undefined' &&
+          typeof DeviceMotionEvent.requestPermission === 'function') {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === 'granted') {
+            startSensor();
+          } else {
+            alert('センサの利用が許可されませんでした。');
+          }
+        } catch (e) {
+          console.error(e);
+          alert('センサ許可の取得中にエラーが発生しました。');
+        }
+      } else {
+        // Androidなど、許可APIが不要な場合
+        startSensor();
+      }
+    };
+
+    function startSensor() {
+      if (!window.DeviceMotionEvent) {
+        alert('この端末 / ブラウザは DeviceMotion に対応していません。');
+        return;
       }
 
-      canvasCtx.restore();
-    });
+      window.addEventListener('devicemotion', function (e) {
+        lastMotion = e;
+      });
 
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await faceMesh.send({ image: videoElement });
-      },
-      width: 640,
-      height: 480
-    });
-    camera.start();
+      statusEl.textContent =
+        'センサが有効になりました。\n' +
+        '記録したい間隔を入力して「記録開始」を押してください。';
+
+      btnStart.disabled = false;
+      btnPerm.disabled  = true;
+
+      // 表示は0.2秒ごとに更新（がくがく防止）
+      if (displayTimer) clearInterval(displayTimer);
+      displayTimer = setInterval(updateDisplay, 200);
+    }
+
+    function updateDisplay() {
+      if (!lastMotion) return;
+      var a = lastMotion.acceleration || {};
+      var ax = (typeof a.x === 'number') ? a.x : 0;
+      var ay = (typeof a.y === 'number') ? a.y : 0;
+      var az = (typeof a.z === 'number') ? a.z : 0;
+      var abs = Math.sqrt(ax*ax + ay*ay + az*az);
+
+      timeEl.textContent = 'time: ' + new Date().toISOString();
+      accXEl.textContent = fmt2(ax);
+      accYEl.textContent = fmt2(ay);
+      accZEl.textContent = fmt2(az);
+      accAbsEl.textContent = fmt2(abs);
+    }
+
+    // ==========
+    // 記録開始
+    // ==========
+    btnStart.onclick = function () {
+      if (!lastMotion) {
+        alert('まだセンサデータが届いていません。少し端末を動かしてからもう一度試してください。');
+        return;
+      }
+
+      var intervalSec = parseFloat(intervalEl.value);
+      if (!(intervalSec > 0)) {
+        alert('記録間隔（秒）を正しく入力してください。');
+        return;
+      }
+      var intervalMs = intervalSec * 1000;
+
+      // CSVのヘッダ行（列の意味がわかるように）
+      logLines = [];
+      logLines.push([
+        'time_iso',      // 記録時刻（世界時刻ISO形式）
+        'elapsed_ms',    // 記録開始からの経過時間[ms]
+        'acc_x',         // 重力なし加速度 X[m/s^2]
+        'acc_y',         // 重力なし加速度 Y[m/s^2]
+        'acc_z',         // 重力なし加速度 Z[m/s^2]
+        'acc_abs',       // 加速度ベクトルの大きさ |a|[m/s^2]
+        'interval_ms'    // 記録間隔[ms]
+      ].join(','));
+
+      startPerf = performance.now();
+      logging   = true;
+
+      // intervalMsごとに最後に届いた加速度を記録
+      if (logTimerId !== null) {
+        clearInterval(logTimerId);
+        logTimerId = null;
+      }
+      logTimerId = setInterval(function () {
+        if (!lastMotion) return;
+        var a  = lastMotion.acceleration || {};
+        var ax = (typeof a.x === 'number') ? a.x : 0;
+        var ay = (typeof a.y === 'number') ? a.y : 0;
+        var az = (typeof a.z === 'number') ? a.z : 0;
+        var abs = Math.sqrt(ax*ax + ay*ay + az*az);
+
+        var now = new Date();
+        var elapsedMs = performance.now() - startPerf;
+
+        var line = [
+          now.toISOString(),
+          elapsedMs.toFixed(1),
+          ax,
+          ay,
+          az,
+          abs,
+          intervalMs
+        ].join(',');
+
+        logLines.push(line);
+      }, intervalMs);
+
+      statusEl.textContent =
+        '記録中です。（' + intervalSec + '秒ごとに1行記録）\n' +
+        '貧乏ゆすりを行い、終わったら「記録停止」を押してください。';
+
+      btnStart.disabled = true;
+      btnStop.disabled  = false;
+      btnDL.disabled    = false;
+    };
+
+    // ==========
+    // 記録停止
+    // ==========
+    btnStop.onclick = function () {
+      if (logTimerId !== null) {
+        clearInterval(logTimerId);
+        logTimerId = null;
+      }
+      logging = false;
+
+      statusEl.textContent =
+        '記録を停止しました。\n「CSVダウンロード」で保存できます。';
+
+      btnStart.disabled = false;
+      btnStop.disabled  = true;
+    };
+
+    // ==========
+    // CSVダウンロード
+    // ==========
+    btnDL.onclick = function () {
+      if (!logLines || logLines.length <= 1) {
+        alert('記録されたデータがありません。先に「記録開始」→「記録停止」を行ってください。');
+        return;
+      }
+
+      var csvContent = logLines.join('\n');
+      var blob = new Blob([csvContent], { type: 'text/csv' });
+      var url  = URL.createObjectURL(blob);
+
+      var now = new Date();
+      var fname = 'leg_shake_acc_' +
+                  now.toISOString().replace(/[:]/g, '-').slice(0,19) +
+                  '.csv';
+
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      statusEl.textContent =
+        'CSVファイルをダウンロードしました。\n' +
+        'ExcelやPythonなどで解析に使ってください。';
+    };
   </script>
 </body>
 </html>
